@@ -1,0 +1,128 @@
+import regex as re
+import os 
+from multiprocessing import Pool
+
+from pretokenization_example import find_chunk_boundaries
+
+def merge(ids,pair,idx,special_list):
+
+    if ids in special_list:
+        return ids
+
+    i=0
+    
+    while i < len(ids):
+        if ids[i]==pair[0] and i < len(ids)-1 and ids[i+1] == pair[1]:
+            ids.pop(i)
+            ids.pop(i)
+            ids.insert(i,idx)
+            i+=1
+        else:
+            i+=1
+            continue
+    return ids
+
+
+def get_state(ids,counts,special_list):
+    '''
+    用来返回连续对出现次数
+    '''
+    if ids in special_list:
+        return counts
+
+    for pair in zip(ids,ids[1:]):
+        counts[pair] = counts.get(pair,0)+1
+        
+    return counts
+
+def _process_chunk(args):
+    """多进程 Worker：读取文件切片，并保护 special_tokens 不被正则拆碎"""
+    input_path, start, end, pattern_str, special_tokens = args
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk_text = f.read(end - start).decode("utf-8", errors="ignore")
+
+    pattern = re.compile(pattern_str)
+    chunk_bytes_list = []
+
+    if special_tokens:
+        # 构造特殊字符匹配正则
+        special_pattern = re.compile(
+            "(" + "|".join(re.escape(t) for t in special_tokens) + ")"
+        )
+
+        for part in re.split(special_pattern, chunk_text):
+            if not part:
+                continue
+            if part in special_tokens:
+                # 关键：特殊 token 作为一个整体放入，保护其不被正则切割，不参与后续 merge
+                chunk_bytes_list.append(list(part.encode("utf-8")))
+            else:
+                for chunk in re.findall(pattern, part):
+                    chunk_bytes_list.append(list(chunk.encode("utf-8")))
+    else:
+        for chunk in re.findall(pattern, chunk_text):
+            chunk_bytes_list.append(list(chunk.encode("utf-8")))
+
+    return chunk_bytes_list
+
+
+def train_bpe(input_path, vocab_size, special_tokens=None,**kwargs):
+    if special_tokens is None:
+        special_tokens=[]
+
+    vocab = {idx: bytes([idx]) for idx in range(256)}
+    new_idx=256
+    merges=[]
+    special_list=[list(i.encode("utf-8")) for i in special_tokens]
+
+    special_vocab={}
+    for st in special_tokens:
+        special_vocab[st] = new_idx
+        vocab[new_idx] = st.encode("utf-8")
+        new_idx+=1
+
+    pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    text_byte = []
+
+    if input_path is not None and os.path.exists(input_path):
+        num_processes = kwargs.get("num_processes",os.cpu_count() or 4)
+
+        split_token = (
+            special_tokens[0].encode("utf-8") if special_tokens else b"\n"
+        )
+
+        with open(input_path,"rb") as f:
+            boundaries = find_chunk_boundaries(f,num_processes,split_token)
+
+        task = [
+            (input_path,start,end,pattern,special_tokens)
+            for start,end in zip(boundaries[:-1],boundaries[1:])
+        ]
+
+        with Pool(processes=num_processes) as pool:
+            results = pool.map(_process_chunk,task)
+            for res in results:
+                text_byte.extend(res)
+    else:
+        raise ValueError("invalid path")
+    
+    
+
+    for i in range(vocab_size-256-len(special_tokens)):
+        counts={}
+        for word in text_byte:
+            counts = get_state(word,counts,special_list)
+
+        if not counts:
+            break
+
+        max_pair = max(counts,key=counts.get)
+
+        text_byte=[merge(ids,max_pair,new_idx,special_list) for ids in text_byte]
+        vocab[new_idx]=vocab[max_pair[0]]+vocab[max_pair[1]]
+        merges.append((vocab[max_pair[0]],vocab[max_pair[1]]))
+        new_idx+=1
+
+    return (vocab,merges)
+    
