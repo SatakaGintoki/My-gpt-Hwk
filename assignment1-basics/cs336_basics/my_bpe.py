@@ -2,7 +2,7 @@ import regex as re
 import os 
 from multiprocessing import Pool
 
-from pretokenization_example import find_chunk_boundaries
+from .pretokenization_example import find_chunk_boundaries
 
 def merge(ids,pair,idx,special_list):
 
@@ -106,23 +106,82 @@ def train_bpe(input_path, vocab_size, special_tokens=None,**kwargs):
                 text_byte.extend(res)
     else:
         raise ValueError("invalid path")
-    
-    
 
-    for i in range(vocab_size-256-len(special_tokens)):
-        counts={}
-        for word in text_byte:
-            counts = get_state(word,counts,special_list)
+    word_state = [] #用来记录每个word的有什么对,每个对的个数
+
+    word_idx = {} #用来记录每个对在那个word出现
+
+    for idx,word in enumerate(text_byte):
+        if word not in special_list:
+            temp = {}
+            for pair in zip(word,word[1:]):
+                if pair not in word_idx:
+                    word_idx[pair] = set()
+
+                if idx not in word_idx[pair]:
+                    word_idx[pair].add(idx)
+                temp[pair] = temp.get(pair,0)+1
+
+            word_state.append(temp)
+        else:
+            word_state.append({})
+
+    counts = {}
+
+    for word in text_byte:
+        counts = get_state(word,counts,special_list)
+
+    
+    for j in range(vocab_size-256-len(special_tokens)):
 
         if not counts:
             break
 
-        max_pair = max(counts,key=counts.get)
+        max_pair = max(counts, key=lambda p: (counts[p], vocab[p[0]], vocab[p[1]]))
 
-        text_byte=[merge(ids,max_pair,new_idx,special_list) for ids in text_byte]
+        max_idx = word_idx[max_pair]
+
+
+        for _ in sorted(max_idx):
+            i=0
+            while i < len(text_byte[_]):
+                if text_byte[_][i]==max_pair[0] and i < len(text_byte[_])-1 and text_byte[_][i+1] == max_pair[1]:
+                    text_byte[_].pop(i)
+                    text_byte[_].pop(i)
+                    text_byte[_].insert(i,new_idx)
+                    i+=1
+                else:
+                    i+=1
+                    continue
+
+        for _ in sorted(max_idx):
+            for key,val in word_state[_].items():
+                counts[key]=counts[key]-val
+                word_idx[key].remove(_)
+
+            temp={}
+            for pair in zip(text_byte[_],text_byte[_][1:]):
+                counts[pair] = counts.get(pair,0)+1
+
+                if pair not in word_idx:
+                    word_idx[pair] = set()
+                
+                if _ not in word_idx[pair]:
+                    word_idx[pair].add(_)
+                temp[pair] = temp.get(pair,0)+1
+                
+            word_state[_]=temp
+
+        for key in list(counts.keys()):
+            if counts[key] <= 0:
+                del counts[key]
+
+        #text_byte=[merge(ids,max_pair,new_idx,special_list) for ids in text_byte]
         vocab[new_idx]=vocab[max_pair[0]]+vocab[max_pair[1]]
         merges.append((vocab[max_pair[0]],vocab[max_pair[1]]))
         new_idx+=1
+
+        
 
     return (vocab,merges)
     
