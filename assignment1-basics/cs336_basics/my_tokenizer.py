@@ -11,7 +11,7 @@ class Tokenizer:
         if special_tokens is None:
             self.special_tokens=[]
         else:
-            self.special_tokens=special_tokens
+            self.special_tokens=sorted(special_tokens, key=len, reverse=True)
 
         self.special_tokens_bytes = [i.encode("utf-8") for i in self.special_tokens]
 
@@ -21,11 +21,42 @@ class Tokenizer:
 
         self.pattern = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
+        self._pretok_re = re.compile(self.pattern)
+        if self.special_tokens:
+            self._special_re = re.compile(
+                "(" + "|".join(re.escape(t) for t in self.special_tokens) + ")"
+            )
+        else:
+            self._special_re = None
+
+        self.ranks = {pair: i for i, pair in enumerate(self.merges_int)}
+        self.pair_to_id = {
+            (a, b): self.bytes_to_id[self.vocab[a] + self.vocab[b]]
+            for a, b in self.merges_int
+        }
+
+    def _merge_ids(self,ids):
+        while len(ids)>=2:
+            best_i = None
+            best_rank = float("inf")
+
+            for i in range(len(ids)-1):
+                rank = self.ranks.get((ids[i],ids[i+1]),float("inf"))
+                if rank < best_rank:
+                    best_rank = rank
+                    best_i = i
+            if best_i is None:
+                break
+
+            a,b = ids[best_i],ids[best_i+1]
+            ids = ids[:best_i]+[self.pair_to_id[(a, b)]]+ ids[best_i + 2 :]
+
+        return ids
+
     def encode(self,text:str):
-        chunk_bytes_list=[]
+        chunks=[]
 
         if self.special_tokens:
-                # 构造特殊字符匹配正则
                 special_pattern = re.compile(
                     "(" + "|".join(re.escape(t) for t in self.special_tokens) + ")"
                 )
@@ -34,52 +65,23 @@ class Tokenizer:
                     if not part:
                         continue
                     if part in self.special_tokens:
-                        # 关键：特殊 token 作为一个整体放入，保护其不被正则切割，不参与后续 merge
-                        chunk_bytes_list.append(part.encode("utf-8"))
+                        chunks.append(part.encode("utf-8"))
                     else:
                         for chunk in re.findall(self.pattern, part):
-                            chunk_bytes_list.append(list(chunk.encode("utf-8")))
+                            chunks.append(list(chunk.encode("utf-8")))
         else:
             for chunk in re.findall(self.pattern, text):
-                chunk_bytes_list.append(list(chunk.encode("utf-8")))
+                chunks.append(list(chunk.encode("utf-8")))
         
-
-        # sorted_special_tokens = sorted(self.special_tokens, key=lambda s: len(s), reverse=True)
-        # pattern = "(" +"|".join(re.escape(t) for t in sorted_special_tokens)+")"
-        # parts = re.split(pattern,text)
-
-        text_bytes = []
-
-        for part in chunk_bytes_list:
-            if part in self.special_tokens_bytes:
-                text_bytes.append([self.bytes_to_id[part]])
-            else:
-                temp = [ self.bytes_to_id[bytes([i])] for i in part]
-                text_bytes.append(temp)
-
-        
-
-        
-        for ids in text_bytes:
-            new_id = 256 + len(self.special_tokens)
-            for merge in self.merges_int:
-                i=0
-                while i < len(ids):
-                    if ids[i]==merge[0] and i < len(ids)-1 and ids[i+1] == merge[1]:
-                        ids.pop(i)
-                        ids.pop(i)
-                        ids.insert(i,new_id)
-                        i+=1
-                    else:
-                        i+=1
-                        continue
-                new_id+=1
 
         ans = []
 
-        for ids in text_bytes:
-            for i in ids:
-                ans.append(i)
+        for part in chunks:
+            if isinstance(part,bytes) and part in self.special_tokens_bytes:
+                ans.append(self.bytes_to_id[part])
+            else:
+                ids = [self.bytes_to_id[bytes([b])] for b in part]
+                ans.extend(self._merge_ids(ids))
 
         return ans
 
@@ -91,9 +93,8 @@ class Tokenizer:
         for line in iterable:
             if not line:
                 continue
-            # 逐句/逐行编码并惰性产出
             yield from self.encode(line)
-            
+
 
     def decode(self, ids: list[int]):
         ans_text = []
@@ -105,8 +106,3 @@ class Tokenizer:
         text = full_bytes.decode("utf-8", errors="replace")
 
         return text
-
-
-    
-
-

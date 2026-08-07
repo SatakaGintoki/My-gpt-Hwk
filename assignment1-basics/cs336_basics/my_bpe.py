@@ -10,17 +10,19 @@ def merge(ids,pair,idx,special_list):
         return ids
 
     i=0
+
+    ans = []
     
     while i < len(ids):
         if ids[i]==pair[0] and i < len(ids)-1 and ids[i+1] == pair[1]:
-            ids.pop(i)
-            ids.pop(i)
-            ids.insert(i,idx)
-            i+=1
+            ans.append(idx)
+            i+=2
         else:
+            ans.append(ids[i])
             i+=1
             continue
-    return ids
+        
+    return ans
 
 
 def get_state(ids,counts,special_list):
@@ -143,16 +145,22 @@ def train_bpe(input_path, vocab_size, special_tokens=None,**kwargs):
 
 
         for _ in sorted(max_idx):
+            temp = []
             i=0
             while i < len(text_byte[_]):
                 if text_byte[_][i]==max_pair[0] and i < len(text_byte[_])-1 and text_byte[_][i+1] == max_pair[1]:
-                    text_byte[_].pop(i)
-                    text_byte[_].pop(i)
-                    text_byte[_].insert(i,new_idx)
-                    i+=1
+                    temp.append(new_idx)
+                    i+=2
+
+                    # text_byte[_].pop(i)
+                    # text_byte[_].pop(i)
+                    # text_byte[_].insert(i,new_idx)
+                    # i+=1
                 else:
+                    temp.append(text_byte[_][i])
                     i+=1
-                    continue
+
+            text_byte[_] = temp
 
         for _ in sorted(max_idx):
             for key,val in word_state[_].items():
